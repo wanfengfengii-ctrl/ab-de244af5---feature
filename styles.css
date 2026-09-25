@@ -184,6 +184,48 @@ button.primary:hover:not(:disabled) { background: var(--accent-dark); }
   font-size: 14px;
 }
 
+.drift-review {
+  background: #faf8f2;
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  padding: 10px 14px;
+  margin: 12px 0;
+}
+.drift-inputs {
+  display: grid;
+  grid-template-columns: 1fr 1fr auto;
+  gap: 12px;
+  align-items: end;
+}
+.drift-inputs label { font-size: 13px; color: var(--muted); }
+.drift-inputs input {
+  display: block;
+  width: 100%;
+  margin-top: 3px;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font: inherit;
+}
+.drift-result { margin-top: 10px; }
+.drift-verdict {
+  padding: 10px 14px;
+  border-radius: 8px;
+  font-size: 14px;
+}
+.drift-verdict.ok { background: var(--ok-bg); color: var(--ok); border: 1px solid #bfe3c6; }
+.drift-verdict.warn { background: var(--warn-bg); color: var(--bad); border: 1px solid #f3c1bd; }
+.drift-verdict.pending { background: var(--pending-bg); color: var(--pending); border: 1px solid #ecd9a8; }
+.drift-witness {
+  margin: 8px 0 0;
+  padding: 8px 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-size: 14px;
+}
+.drift-witness dt { font-weight: 600; margin-top: 6px; }
+.drift-witness dd { margin: 2px 0 6px; font-variant-numeric: tabular-nums; }
+
 .done { color: var(--ok); font-weight: 600; }
 
 ol.log { margin: 8px 0 0; padding-left: 22px; font-size: 14px; }
@@ -206,4 +248,5 @@ ol.log li { margin: 6px 0; }
 @media (max-width: 720px) {
   .reading-row { grid-template-columns: 1fr; gap: 4px; }
   .reading-row .reading-name { padding-bottom: 0; }
+  .drift-inputs { grid-template-columns: 1fr; }
 }

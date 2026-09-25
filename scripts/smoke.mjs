@@ -13,6 +13,7 @@ import {
   DomainError,
 } from '../src/domain/events.js';
 import { replayScheme, deriveTank } from '../src/domain/replay.js';
+import { reviewDrift } from '../src/domain/drift.js';
 
 const steps = [];
 function step(name) {
@@ -69,6 +70,18 @@ function main() {
   submit(0, [80, 200], 40_000);
   submit(0, [75, 90], 50_000);
   assert.equal(tankOf(0).allSoakingEligible, true);
+  // 漂移复核：每轮共享整数校正。小幅漂移下资格经得住；相邻轮变化放宽后被最早反例推翻
+  const driftTight = reviewDrift(tankOf(0), { maxCorrection: 5, maxDelta: 2 });
+  assert.equal(driftTight.robust, true);
+  const driftLoose = reviewDrift(tankOf(0), { maxCorrection: 5, maxDelta: 6 });
+  assert.equal(driftLoose.robust, false);
+  assert.equal(driftLoose.witness.artifactName, '甲');
+  assert.equal(driftLoose.witness.round, 5);
+  assert.equal(driftLoose.witness.kind, 'decrease-broken');
+  for (let i = 1; i < driftLoose.witness.corrections.length; i += 1) {
+    assert.ok(Math.abs(driftLoose.witness.corrections[i] - driftLoose.witness.corrections[i - 1]) <= 6);
+  }
+  step('漂移复核：资格经得住小幅漂移，被较大相邻轮变化推翻并给出最早反例');
   record = store.append(record.id, buildLiquidChangeEvent(tankOf(0)), record.revision);
   assert.equal(tankOf(0).liquidChanges, 1);
   assert.equal(tankOf(0).nextRoundInPeriod, 1);

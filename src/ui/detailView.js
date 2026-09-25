@@ -7,6 +7,7 @@ import {
   EVENT_TYPES,
 } from '../domain/events.js';
 import { validateRound } from '../domain/validate.js';
+import { reviewDrift, validateDriftParams } from '../domain/drift.js';
 import { ConflictError } from '../store/recordStore.js';
 import { esc, fmtTs, toLocalInputValue } from './dom.js';
 
@@ -56,7 +57,7 @@ function tankCardHtml(tank) {
     </table>
     ${tank.allRemoved
       ? '<p class="done">✅ 全部器物已出槽，本槽监测完成。</p>'
-      : `${nextStepHtml(tank)}${roundFormHtml(tank)}`}
+      : `${nextStepHtml(tank)}${roundFormHtml(tank)}${driftReviewHtml(tank)}`}
   </section>`;
 }
 
@@ -133,6 +134,60 @@ function roundFormHtml(tank) {
   </form>`;
 }
 
+/**
+ * 漂移复核面板：换液或出槽前，填写本周期每轮共用的最大整数校正幅度
+ * 与相邻轮允许的最大校正变化，复核资格结论在电导仪缓慢漂移下是否仍可靠。
+ * 复核结果只绑定产生时的修订号，不落盘；任何写入、换液、出槽、
+ * 其他标签页更新或刷新重放都会重渲染本页，使旧结论自动失效。
+ */
+function driftReviewHtml(tank) {
+  return `<div class="drift-review" data-tank="${tank.id}">
+    <h4>漂移复核（电导仪缓慢漂移）</h4>
+    <p class="muted">系统将从所见修订号重放本槽自上次换液后的全部在泡器物读数，为每轮联合选择一个共享整数校正值（而非分别调整单件读数），精确判定所有允许校正轨迹下资格是否仍成立。</p>
+    <div class="drift-inputs">
+      <label>最大整数校正幅度（µS/cm）
+        <input type="number" min="0" step="1" data-drift="max" placeholder="如：5">
+      </label>
+      <label>相邻轮最大校正变化（µS/cm）
+        <input type="number" min="0" step="1" data-drift="delta" placeholder="如：2">
+      </label>
+      <button type="button" data-action="review-drift" data-tank="${tank.id}">复核漂移影响</button>
+    </div>
+    <div class="errors" hidden></div>
+    <div class="drift-result" hidden></div>
+  </div>`;
+}
+
+/** 复核结论：绑定产生时的修订号展示。 */
+function driftResultHtml(result, revision, currentlyEligible) {
+  const bound = `<p class="muted">结论绑定修订号 r${revision}（第 ${result.period + 1} 周期共 ${result.rounds} 轮读数，自首项记录重放）；任何写入、换液、出槽、其他标签页更新或刷新后自动失效，需重新复核。</p>`;
+  if (result.note === 'no-soaking') {
+    return `<div class="drift-verdict pending">该槽器物均已出槽，无需复核。</div>${bound}`;
+  }
+  if (result.note === 'no-readings') {
+    return `<div class="drift-verdict pending">本周期尚无读数，无法复核。</div>${bound}`;
+  }
+  if (result.note === 'insufficient-rounds') {
+    return `<div class="drift-verdict pending">本周期仅 ${result.rounds} 轮，不足所需连续 ${result.requiredRounds} 轮，资格尚不成立，漂移复核暂不提供结论。</div>${bound}`;
+  }
+  const { maxCorrection, maxDelta } = result.params;
+  if (result.robust) {
+    return `<div class="drift-verdict ok">✅ 该槽资格经得住漂移：在每轮共享整数校正 |c|≤${maxCorrection}、相邻轮变化 ≤${maxDelta} 的全部允许轨迹下，全部在泡器物仍满足连续 ${result.requiredRounds} 轮严格下降且末值 ≤${result.limit}。</div>${bound}`;
+  }
+  const w = result.witness;
+  const seq = w.corrections.map((c, i) => `第 ${i + 1} 轮 ${c >= 0 ? '+' : ''}${c}`).join('，');
+  const verdict = currentlyEligible
+    ? '⚠️ 该槽资格仅在原始读数下暂时成立'
+    : '❌ 该槽资格当前尚不成立，且在允许漂移下最早于以下轮次被推翻';
+  return `<div class="drift-verdict warn">${verdict}：存在允许校正轨迹使「${esc(w.artifactName)}」最早在本周期第 ${w.round} 轮失去资格。</div>
+    <dl class="drift-witness">
+      <dt>最早受影响器物</dt><dd>「${esc(w.artifactName)}」（本周期第 ${w.round} 轮）</dd>
+      <dt>失败原因</dt><dd>${esc(w.reason)}</dd>
+      <dt>校正序列（每轮共享一个整数）</dt><dd>${seq}</dd>
+      <dt>校正后该器物本周期读数</dt><dd>${w.adjustedValues.join(' → ')}</dd>
+    </dl>${bound}`;
+}
+
 function renderEvent(ev, state) {
   const time = fmtTs(Date.parse(ev.at));
   switch (ev.type) {
@@ -205,6 +260,40 @@ function bindDetail(ctx, record, tanks) {
     btn.addEventListener('click', async () => {
       const tank = tankById.get(btn.dataset.tank);
       await mutate(ctx, record, () => buildRemovalEvent(tank, btn.dataset.artifact), '器物已出槽');
+    });
+  });
+
+  root.querySelectorAll('button[data-action="review-drift"]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const panel = btn.closest('.drift-review');
+      const errBox = panel.querySelector('.errors');
+      const resultBox = panel.querySelector('.drift-result');
+      const val = (key) => panel.querySelector(`[data-drift="${key}"]`).value;
+      const params = {
+        maxCorrection: val('max') === '' ? NaN : Number(val('max')),
+        maxDelta: val('delta') === '' ? NaN : Number(val('delta')),
+      };
+      const errors = validateDriftParams(params);
+      if (errors.length > 0) {
+        errBox.hidden = false;
+        errBox.innerHTML = errors.map(esc).join('<br>');
+        resultBox.hidden = true;
+        return;
+      }
+      errBox.hidden = true;
+      // 复核必须基于所见修订号：若记录已在其他标签页或窗口更新，
+      // 放弃本次复核并展示最新状态，避免旧结论冒充当前结论。
+      const fresh = ctx.store.load(record.id);
+      if (!fresh || fresh.revision !== record.revision) {
+        renderDetail(ctx, record.id, {
+          banner: `该方案已在其他标签页或窗口更新（最新修订号 r${fresh ? fresh.revision : '?'}），请基于最新状态重新复核。`,
+        });
+        return;
+      }
+      const tank = tankById.get(btn.dataset.tank);
+      const result = reviewDrift(tank, params);
+      resultBox.hidden = false;
+      resultBox.innerHTML = driftResultHtml(result, record.revision, tank.allSoakingEligible);
     });
   });
 }
