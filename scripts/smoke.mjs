@@ -13,6 +13,7 @@ import {
   DomainError,
 } from '../src/domain/events.js';
 import { replayScheme, deriveTank } from '../src/domain/replay.js';
+import { reviewTankDrift, DRIFT_STATUS } from '../src/domain/drift.js';
 
 const steps = [];
 function step(name) {
@@ -114,6 +115,36 @@ function main() {
   assert.equal(tankOf(1).allSoakingEligible, true);
   assert.equal(tankOf(0).allSoakingEligible, false);
   step('多槽位资格相互独立');
+
+  // 8b. 漂移复核：只读分析，不写入事件，结论绑定所见修订号
+  let review = reviewTankDrift(tankOf(1), { maxCorrection: 5, maxStep: 5 });
+  assert.equal(review.status, DRIFT_STATUS.OK);
+  assert.equal(review.robust, true); // 落差 40 > D=5，末值余量 10 ≥ M=5
+  assert.equal(review.witness, null);
+  // 更宽的幅度假设：落差仍安全，但 M=20 可把末值 40 推过上限 50
+  review = reviewTankDrift(tankOf(1), { maxCorrection: 20, maxStep: 20 });
+  assert.equal(review.robust, false);
+  assert.equal(review.witness.kind, 'last-value');
+  assert.deepEqual(review.witness.correction, [11, 11]); // 40+11=51 > 50
+  // 放宽相邻变化至 40：落差恰为 40 可被一次 Δc=40 抹平，且与末值同轮时优先报告“未严格下降”
+  review = reviewTankDrift(tankOf(1), { maxCorrection: 20, maxStep: 40 });
+  assert.equal(review.robust, false);
+  assert.equal(review.witness.kind, 'decrease');
+  assert.deepEqual(review.witness.correction, [-20, 20]);
+  assert.deepEqual(review.witness.correctedValues, [60, 60]); // 60 → 60 不再严格下降
+  // 追加三轮使末尾窗口（R=2 即最后两轮）出现薄弱落差：第 5 轮落差仅 1
+  submit(1, [39], 220_000);
+  submit(1, [38], 230_000);
+  submit(1, [37], 240_000);
+  const revisionBeforeReview = store.load(record.id).revision;
+  review = reviewTankDrift(tankOf(1), { maxCorrection: 5, maxStep: 5 });
+  assert.equal(review.robust, false);
+  assert.equal(review.witness.round, 5);
+  assert.equal(review.witness.kind, 'decrease');
+  assert.deepEqual(review.witness.correction, [-5, -5, -5, -5, 0]);
+  assert.deepEqual(review.witness.correctedValues, [75, 35, 34, 33, 37]); // 33 → 37 回升，streak 断为 1
+  assert.equal(store.load(record.id).revision, revisionBeforeReview); // 复核不产生写入
+  step('漂移复核精确判定全部校正轨迹，只读且不落任何事件');
 
   // 9. 模拟刷新/重开：新存储实例 + 同一后端，重放还原相同过程与资格
   const reopened = createRecordStore(kv).load(record.id);
